@@ -14,7 +14,6 @@ DEFAULT_DELAY = 600
 group_settings = {}
 
 # --- DUMMY SERVER FOR KOYEB HEALTH CHECK ---
-# Koyeb lines-la "Health check failed" error varama eruka indha chinna server udhavum
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -22,72 +21,79 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
 def run_health_server():
-    # Koyeb default-ah port 8000 thaan check pannum
     server = HTTPServer(('0.0.0.0', 8000), HealthCheckHandler)
     server.serve_forever()
 
-# Server-ah background thread-la run panrom
 threading.Thread(target=run_health_server, daemon=True).start()
-print("Koyeb Health Check Server started on port 8000...")
+print("Koyeb Health Check Server started...")
 
 # --- TELEGRAM BOT LOGIC ---
 bot = TelegramClient('autodelete_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-print("Dynamic Time Bot with 10 mins default is running successfully...")
+print("Admin Delete Bot is running successfully...")
 
-# 1. TIME SET PANRA COMMAND
-@bot.on(events.NewMessage(pattern=r'^/settime (\d+)'))
-async def set_delete_time(event):
-    chat_id = event.chat_id
-    if event.is_private:
-        await event.reply("⚠️ Idhai neenga group-la dhaan set panna mudiyum!")
+
+# --- 1. BOT CHAT (PRIVATE DM)-LA TIME SET PANNA ---
+# Format: /settime [Group_ID] [Seconds] -> e.g., /settime -100123456789 20
+@bot.on(events.NewMessage(chats=None, pattern=r'^/settime\s+(-\d+)\s+(\d+)'))
+async def set_delete_time_dm(event):
+    if not event.is_private:
+        # Group-la potta udanae delete pannidum, settings allow pannaadhu
+        await event.delete()
         return
 
-    sender = await event.get_sender()
-    try:
-        permissions = await bot.get_permissions(chat_id, sender)
-        if not permissions.is_admin and not permissions.is_creator:
-            await event.reply("❌ Prachana! Idhai panna ungaluku Admin power thevai.")
-            return
-    except Exception:
-        pass
+    target_chat_id = int(event.pattern_match.group(1))
+    seconds = int(event.pattern_match.group(2))
 
-    seconds = int(event.pattern_match.group(1))
     if seconds < 5:
         await event.reply("⚠️ Minimum time 5 seconds-avadhu irukkanum!")
         return
 
-    group_settings[chat_id] = seconds
-    await event.reply(f"✅ Semma! Ippo indha group-la messages ellaam **{seconds} seconds**-la auto-delete aagum.")
+    # Andha specific group ID-ku time-ah save panrom
+    group_settings[target_chat_id] = seconds
+    await event.reply(f"✅ Semma! Group ID ` {target_chat_id} `-la ippo messages ellaam **{seconds} seconds**-la auto-delete aagum (Admins sethu)!")
 
-# 2. CURRENT TIME CHECK PANRA COMMAND
-@bot.on(events.NewMessage(pattern=r'^/status'))
-async def check_status(event):
-    if event.is_private:
+
+# --- 2. BOT CHAT (PRIVATE DM)-LA STATUS CHECK PANNA ---
+# Format: /status [Group_ID] -> e.g., /status -100123456789
+@bot.on(events.NewMessage(chats=None, pattern=r'^/status\s+(-\d+)'))
+async def check_status_dm(event):
+    if not event.is_private:
+        await event.delete()
         return
-    chat_id = event.chat_id
-    current_time = group_settings.get(chat_id, DEFAULT_DELAY)
+
+    target_chat_id = int(event.pattern_match.group(1))
+    current_time = group_settings.get(target_chat_id, DEFAULT_DELAY)
     
     mins = current_time // 60
     secs = current_time % 60
     time_str = f"{mins} mins" if secs == 0 else f"{mins} mins {secs} secs" if mins > 0 else f"{secs} secs"
     
-    await event.reply(f"⏱️ Ippo set aahi irukkura delete time: **{time_str}** ({current_time} seconds).")
+    await event.reply(f"⏱️ Group ID ` {target_chat_id} `-oda delete time ippo: **{time_str}** ({current_time} seconds).")
 
-# 3. AUTO DELETE LOGIC
+
+# --- 3. AUTO DELETE LOGIC (FOR ALL USERS & ADMINS) ---
 @bot.on(events.NewMessage)
-async def handle_new_message(event):
+async def handle_all_messages(event):
+    # Chat private-ah irundhalo, commands-ah irundhalo ulla pogadhu
     if event.is_private or event.text.startswith('/'):
         return
 
     chat_id = event.chat_id
     delete_delay = group_settings.get(chat_id, DEFAULT_DELAY)
 
+    # Set panna time varaikkum wait pannum
     await asyncio.sleep(delete_delay)
     
     try:
+        # Inga direct-ah event.delete() tharurom, bot-ku admin right irundha ellaathayum thookkidum
         await event.delete()
-        print(f"[{chat_id}] Deleted message: {event.id}")
+        print(f"[{chat_id}] Deleted message from user/admin: {event.id}")
     except Exception as e:
         print(f"Error deleting message: {e}")
 
